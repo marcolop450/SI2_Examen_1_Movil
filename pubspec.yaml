@@ -1,0 +1,32 @@
+name: emergencias_movil
+description: "A new Flutter project."
+publish_to: 'none'
+
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.11.5
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  cupertino_icons: ^1.0.8
+  http: ^1.6.0
+  shared_preferences: ^2.5.5
+  google_fonts: ^6.2.1        
+  geolocator: ^14.0.2
+  image_picker: ^1.2.1
+  record: ^6.2.0
+  path_provider: ^2.1.5
+  url_launcher: ^6.3.2
+  flutter_paypal: ^0.2.1
+  flutter_local_notifications: ^21.0.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
