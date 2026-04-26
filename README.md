@@ -39,7 +39,7 @@ Esta aplicación permite a los clientes reportar emergencias vehiculares en tiem
 
 ## Equipo de desarrollo
 
-| Nombre | Codigo |
+| Nombre | Registro |
 |---|---|
 | Lopez Velazquez Marco Alejandro | 222008891 |
 
