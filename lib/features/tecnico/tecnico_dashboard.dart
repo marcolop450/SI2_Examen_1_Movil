@@ -1,8 +1,13 @@
 import 'dart:async';
+import 'dart:convert'; // NUEVO: Para jsonEncode
+
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:web_socket_channel/web_socket_channel.dart'; // NUEVO: WebSockets
+import 'package:google_maps_flutter/google_maps_flutter.dart'; // NUEVO: Google Maps
+
 import '../../core/auth_services/auth_service.dart';
 import '../../core/services/incidente_service.dart';
 
@@ -20,7 +25,11 @@ class _TecnicoDashboardState extends State<TecnicoDashboard> {
 
   List<dynamic> _ordenes = [];
   bool _cargando = true;
-  Timer? _trackerTimer;
+
+  // NUEVAS: Variables de estado para WebSockets y GPS
+  WebSocketChannel? _wsChannel;
+  Timer? _gpsTimer;
+  int? _incidenteActivoId;
 
   @override
   void initState() {
@@ -28,18 +37,21 @@ class _TecnicoDashboardState extends State<TecnicoDashboard> {
     _cargarOrdenes();
   }
 
+  // NUEVO: Limpieza de WebSockets y Timer al destruir el widget
   @override
   void dispose() {
-    _trackerTimer?.cancel();
+    _gpsTimer?.cancel();
+    _wsChannel?.sink.close();
     super.dispose();
   }
 
   // =========================================================
-  // CU12: CARGAR ÓRDENES Y ENCENDER RADAR DE TRANSMISIÓN
+  // CU12: CARGAR ÓRDENES
   // =========================================================
   Future<void> _cargarOrdenes() async {
     if (!mounted) return;
     setState(() => _cargando = true);
+
     try {
       final ordenes = await IncidenteService.obtenerAsignados();
       setState(() {
@@ -48,9 +60,14 @@ class _TecnicoDashboardState extends State<TecnicoDashboard> {
       });
 
       if (_ordenes.isNotEmpty) {
-        _iniciarTransmisionGPS(_ordenes.first['id_incidente']);
+        // Iniciar WebSockets con el primer incidente asignado
+        _iniciarWsConGPS(_ordenes.first['id_incidente']);
       } else {
-        _trackerTimer?.cancel();
+        // Si no hay órdenes, apagamos el radar
+        _gpsTimer?.cancel();
+        _wsChannel?.sink.close();
+        _wsChannel = null;
+        _incidenteActivoId = null;
       }
     } catch (e) {
       if (mounted) setState(() => _cargando = false);
@@ -58,22 +75,43 @@ class _TecnicoDashboardState extends State<TecnicoDashboard> {
     }
   }
 
-  void _iniciarTransmisionGPS(int idIncidente) {
-    _trackerTimer?.cancel();
-    _trackerTimer = Timer.periodic(const Duration(seconds: 10), (timer) async {
+  // =========================================================
+  // NUEVO: CONECTAR Y EMPEZAR A ENVIAR GPS POR WEBSOCKETS
+  // =========================================================
+  void _iniciarWsConGPS(int incidenteId) {
+    // Evitar reconectar si ya estamos transmitiendo para este incidente
+    if (_incidenteActivoId == incidenteId && _wsChannel != null) return;
+
+    // Limpiar conexiones previas por seguridad
+    _gpsTimer?.cancel();
+    _wsChannel?.sink.close();
+
+    _incidenteActivoId = incidenteId;
+
+    _wsChannel = WebSocketChannel.connect(
+      Uri.parse('ws://10.0.2.2:8000/ws/incidente/$incidenteId'),
+    );
+
+    // Enviar GPS cada 5 segundos por WebSocket
+    _gpsTimer = Timer.periodic(const Duration(seconds: 5), (_) async {
       try {
-        Position pos = await Geolocator.getCurrentPosition(
+        final pos = await Geolocator.getCurrentPosition(
           desiredAccuracy: LocationAccuracy.high,
         );
 
-        await IncidenteService.reportarUbicacionTecnico(
-          idIncidente,
-          pos.latitude,
-          pos.longitude,
-        );
-        print("GPS enviado al cliente: ${pos.latitude}, ${pos.longitude}");
+        if (_wsChannel != null) {
+          _wsChannel!.sink.add(
+            jsonEncode({
+              "tipo": "ubicacion_tecnico",
+              "latitud": pos.latitude,
+              "longitud": pos.longitude,
+              "eta_minutos": null, // opcional: calcular con Google Maps
+            }),
+          );
+          print("WS GPS enviado: ${pos.latitude}, ${pos.longitude}");
+        }
       } catch (e) {
-        print("Error enviando GPS: $e");
+        print("Error obteniendo o enviando GPS por WS: $e");
       }
     });
   }
@@ -100,7 +138,6 @@ class _TecnicoDashboardState extends State<TecnicoDashboard> {
     final TextEditingController costoController = TextEditingController();
     final formKey = GlobalKey<FormState>();
 
-    // 🔥 Convertimos el diálogo simple en un formulario de liquidación
     final double? costoFinal = await showDialog<double>(
       context: context,
       barrierDismissible: false,
@@ -181,7 +218,6 @@ class _TecnicoDashboardState extends State<TecnicoDashboard> {
             ),
             onPressed: () {
               if (formKey.currentState!.validate()) {
-                // Cerramos el popup y enviamos el número de vuelta
                 Navigator.pop(
                   context,
                   double.parse(costoController.text.trim()),
@@ -193,19 +229,31 @@ class _TecnicoDashboardState extends State<TecnicoDashboard> {
       ),
     );
 
-    // Si el técnico presionó "CANCELAR"
     if (costoFinal == null) return;
 
     try {
       setState(() => _cargando = true);
-      // 🔥 Le enviamos el costo final a tu servicio
+
+      // Actualizamos el estado vía API
       await IncidenteService.actualizarEstado(
         idIncidente,
         'atendido',
         costoFinal: costoFinal,
       );
 
-      _trackerTimer?.cancel(); // Apagamos el radar
+      // NUEVO: Enviamos el cambio de estado por WS y cerramos la conexión
+      _wsChannel?.sink.add(
+        jsonEncode({
+          "tipo": "cambio_estado",
+          "estado": "finalizado",
+          "mensaje": "El técnico finalizó el servicio.",
+        }),
+      );
+      _gpsTimer?.cancel();
+      _wsChannel?.sink.close();
+      _wsChannel = null;
+      _incidenteActivoId = null;
+
       await _cargarOrdenes(); // Recargamos la pantalla
       _mostrarMensaje(
         'Servicio finalizado. Cobro enviado: Bs. ${costoFinal.toStringAsFixed(2)}',
@@ -245,7 +293,8 @@ class _TecnicoDashboardState extends State<TecnicoDashboard> {
           IconButton(
             icon: const Icon(Icons.logout, color: Colors.white),
             onPressed: () async {
-              _trackerTimer?.cancel();
+              _gpsTimer?.cancel();
+              _wsChannel?.sink.close();
               await AuthService.logout();
               if (mounted) Navigator.pushReplacementNamed(context, '/');
             },
@@ -304,8 +353,9 @@ class _TecnicoDashboardState extends State<TecnicoDashboard> {
         (e) => e['tipo_enum'] == 'audio',
         orElse: () => null,
       );
-      if (audioEv != null)
+      if (audioEv != null) {
         vozCliente = audioEv['transcripcion_audio_texto'] ?? vozCliente;
+      }
     }
 
     return Card(
@@ -343,7 +393,7 @@ class _TecnicoDashboardState extends State<TecnicoDashboard> {
                     ),
                     SizedBox(width: 4),
                     Text(
-                      'GPS Activo',
+                      'GPS Activo (WS)',
                       style: TextStyle(
                         color: Colors.greenAccent,
                         fontSize: 12,

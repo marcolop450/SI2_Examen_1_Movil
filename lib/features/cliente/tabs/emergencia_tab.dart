@@ -9,6 +9,9 @@ import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../../core/services/incidente_service.dart';
 import '../../../models/vehiculo_model.dart';
+import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:uuid/uuid.dart';
+import 'dart:async'; // Para el StreamSubscription
 
 // 🔥 IMPORTAMOS LA NUEVA PANTALLA DE MONITOREO
 import '../screens/monitoreo_screen.dart';
@@ -45,16 +48,28 @@ class _EmergenciaTabState extends State<EmergenciaTab> {
   bool _grabandoAudio = false;
   File? _audioReal;
 
+  late StreamSubscription<List<ConnectivityResult>> _connectivitySubscription;
+
   @override
   void initState() {
     super.initState();
     _obtenerGPS();
+
+    // CU19: Escuchar cambios de red para sincronizar automáticamente
+    _connectivitySubscription = Connectivity().onConnectivityChanged.listen((
+      List<ConnectivityResult> result,
+    ) {
+      if (!result.contains(ConnectivityResult.none)) {
+        IncidenteService.sincronizarEmergenciasOffline();
+      }
+    });
   }
 
   @override
   void dispose() {
     _descCtrl.dispose();
     _audioRecorder.dispose();
+    _connectivitySubscription.cancel(); // <-- Importante cancelar
     super.dispose();
   }
 
@@ -160,10 +175,10 @@ class _EmergenciaTabState extends State<EmergenciaTab> {
     }
 
     String descripcionFinal = _descCtrl.text.trim();
-    if (_fotoReal == null && descripcionFinal.isEmpty) {
+    if (descripcionFinal.isEmpty && _fotoReal == null && _audioReal == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Debes tomar una foto o escribir una descripción.'),
+          content: Text('Agrega al menos una descripción, foto o audio.'),
           backgroundColor: _rojo,
         ),
       );
@@ -193,34 +208,67 @@ class _EmergenciaTabState extends State<EmergenciaTab> {
           });
       }
 
-      // 1. Enviamos todo al Backend
-      final nuevoIncidente = await IncidenteService.registrarEmergencia(
-        vehiculoId: _vehiculoSeleccionado!.idVehiculo,
-        latitud: _latitudReal!,
-        longitud: _longitudReal!,
-        descripcion: descripcionFinal,
-        evidencias: evidenciasPayload,
-      );
+      // CU19: Verificamos si hay internet
+      final List<ConnectivityResult> connectivityResult = await (Connectivity()
+          .checkConnectivity());
+      bool hasInternet = !connectivityResult.contains(ConnectivityResult.none);
 
-      final incidenteId = nuevoIncidente.idIncidente ?? 0;
-      SharedPreferences prefs = await SharedPreferences.getInstance();
-      await prefs.setInt('incidente_activo_id', incidenteId);
+      String uuidGenerado = const Uuid().v4(); // Identificador único blindado
 
-      if (mounted) {
-        setState(() {
-          _enviando = false;
-          _descCtrl.clear();
-          _fotoReal = null;
-          _audioReal = null;
-        });
-
-        // 🔥 2. EL SALTO MÁGICO: Vamos directo a la pantalla de Monitoreo
-        Navigator.push(
-          context,
-          MaterialPageRoute(
-            builder: (context) => MonitoreoScreen(incidenteId: incidenteId),
-          ),
+      if (hasInternet) {
+        // --- FLUJO NORMAL (ONLINE) ---
+        final nuevoIncidente = await IncidenteService.registrarEmergencia(
+          vehiculoId: _vehiculoSeleccionado!.idVehiculo,
+          latitud: _latitudReal!,
+          longitud: _longitudReal!,
+          descripcion: descripcionFinal,
+          evidencias: evidenciasPayload,
+          uuidOffline: uuidGenerado, // Lo mandamos igual por seguridad
         );
+
+        final incidenteId = nuevoIncidente.idIncidente ?? 0;
+        SharedPreferences prefs = await SharedPreferences.getInstance();
+        await prefs.setInt('incidente_activo_id', incidenteId);
+
+        if (mounted) {
+          _limpiarFormulario();
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (context) => MonitoreoScreen(incidenteId: incidenteId),
+            ),
+          );
+        }
+      } else {
+        // --- FLUJO OFFLINE (CU19) ---
+        Map<String, dynamic> payloadOffline = {
+          'vehiculoId': _vehiculoSeleccionado!.idVehiculo,
+          'lat': _latitudReal,
+          'lng': _longitudReal,
+          'desc': descripcionFinal,
+          'evidencias': evidenciasPayload,
+          'uuid': uuidGenerado,
+        };
+
+        SharedPreferences prefs = await SharedPreferences.getInstance();
+        List<String> offlineList =
+            prefs.getStringList('emergencias_offline') ?? [];
+        offlineList.add(jsonEncode(payloadOffline));
+        await prefs.setStringList('emergencias_offline', offlineList);
+
+        if (mounted) {
+          _limpiarFormulario();
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text(
+                'Sin conexión 📶. Emergencia guardada. Se enviará automáticamente cuando vuelva la señal.',
+                style: TextStyle(color: Colors.white),
+              ),
+              backgroundColor: Colors.orange,
+              duration: Duration(seconds: 5),
+            ),
+          );
+        }
       }
     } catch (e) {
       if (mounted) {
@@ -230,6 +278,16 @@ class _EmergenciaTabState extends State<EmergenciaTab> {
         );
       }
     }
+  }
+
+  // Método helper para limpiar la vista
+  void _limpiarFormulario() {
+    setState(() {
+      _enviando = false;
+      _descCtrl.clear();
+      _fotoReal = null;
+      _audioReal = null;
+    });
   }
 
   @override
@@ -407,7 +465,7 @@ class _EmergenciaTabState extends State<EmergenciaTab> {
           const SizedBox(width: 12),
           Expanded(
             child: Text(
-              'La IA procesará tu foto/audio real para clasificar la emergencia.',
+              'Podés enviar solo texto, solo foto o solo audio. La IA clasifica con lo que tengas.',
               style: GoogleFonts.poppins(
                 fontSize: 12,
                 color: const Color(0xFFA32D2D),

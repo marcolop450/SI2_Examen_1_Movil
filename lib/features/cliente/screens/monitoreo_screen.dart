@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'dart:convert';
+import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -23,23 +25,85 @@ class _MonitoreoScreenState extends State<MonitoreoScreen> {
   Map<String, dynamic>? _datos;
   Timer? _pollingTimer;
   String _estadoAnterior = 'pendiente';
-
+  WebSocketChannel? _wsChannel;
+  StreamSubscription? _wsSub;
   final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin =
       FlutterLocalNotificationsPlugin();
 
   @override
   void initState() {
     super.initState();
-    _obtenerEstado();
-    _pollingTimer = Timer.periodic(const Duration(seconds: 5), (timer) {
-      _obtenerEstado();
-    });
+    _conectarWebSocket();
+    _obtenerEstado(); // Mantenemos tu llamada original
   }
 
   @override
   void dispose() {
+    _wsSub?.cancel();
+    _wsChannel?.sink.close();
     _pollingTimer?.cancel();
     super.dispose();
+  }
+
+  void _conectarWebSocket() {
+    final uri = Uri.parse(
+      'ws://10.0.2.2:8000/ws/incidente/${widget.incidenteId}',
+      // En producción: 'wss://backend-ixkv.onrender.com/ws/incidente/${widget.incidenteId}'
+    );
+
+    _wsChannel = WebSocketChannel.connect(uri);
+
+    _wsSub = _wsChannel!.stream.listen(
+      (mensaje) {
+        final data = jsonDecode(mensaje) as Map<String, dynamic>;
+        final tipo = data['tipo'] as String;
+
+        if (!mounted) return;
+        setState(() {
+          // ------------------------------------------------
+          // Actualizar ubicación del técnico en el mapa
+          // ------------------------------------------------
+          if (tipo == 'ubicacion_tecnico') {
+            // Actualizar marcador del técnico en GoogleMap
+            // (usar las variables latTecnico / lngTecnico que ya existen)
+          }
+
+          // ------------------------------------------------
+          // Actualizar estado del incidente
+          // ------------------------------------------------
+          if (tipo == 'cambio_estado') {
+            final nuevoEstado = data['estado'] as String;
+            
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(
+                  data['mensaje'] ?? 'Estado actualizado: $nuevoEstado',
+                ),
+                backgroundColor: Colors.green,
+              ),
+            );
+
+            // CORRECCIÓN AQUÍ: Extraemos el costo y usamos el método correcto
+            if (nuevoEstado == 'finalizado') {
+              final costoString = data['costo_final']?.toString() ?? '0.0';
+              final costoFinal = double.tryParse(costoString) ?? 0.0;
+              
+              _mostrarAnuncioPago(costoFinal);
+            }
+          }
+        });
+      },
+      onError: (error) {
+        // Reconectar automáticamente después de 3 segundos
+        Future.delayed(const Duration(seconds: 3), _conectarWebSocket);
+      },
+      onDone: () {
+        // Reconectar si se cerró inesperadamente
+        if (mounted) {
+          Future.delayed(const Duration(seconds: 3), _conectarWebSocket);
+        }
+      },
+    );
   }
 
   Future<void> mostrarNotificacionNativa(String titulo, String cuerpo) async {
