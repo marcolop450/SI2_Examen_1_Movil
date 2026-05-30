@@ -8,6 +8,9 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import '../../../core/services/incidente_service.dart';
 import 'pago_screen.dart';
+import 'package:http/http.dart' as http;
+import '../../../core/constants/api_constants.dart';
+import '../../../core/auth_services/auth_service.dart';
 
 class MonitoreoScreen extends StatefulWidget {
   final int incidenteId;
@@ -64,8 +67,11 @@ class _MonitoreoScreenState extends State<MonitoreoScreen> {
           // Actualizar ubicación del técnico en el mapa
           // ------------------------------------------------
           if (tipo == 'ubicacion_tecnico') {
-            // Actualizar marcador del técnico en GoogleMap
-            // (usar las variables latTecnico / lngTecnico que ya existen)
+            if (_datos != null) {
+              _datos!['latitud_tecnico'] = data['latitud'];
+              _datos!['longitud_tecnico'] = data['longitud'];
+              _datos!['eta_minutos'] = data['eta_minutos'];
+            }
           }
 
           // ------------------------------------------------
@@ -73,7 +79,7 @@ class _MonitoreoScreenState extends State<MonitoreoScreen> {
           // ------------------------------------------------
           if (tipo == 'cambio_estado') {
             final nuevoEstado = data['estado'] as String;
-            
+
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
                 content: Text(
@@ -87,7 +93,7 @@ class _MonitoreoScreenState extends State<MonitoreoScreen> {
             if (nuevoEstado == 'finalizado') {
               final costoString = data['costo_final']?.toString() ?? '0.0';
               final costoFinal = double.tryParse(costoString) ?? 0.0;
-              
+
               _mostrarAnuncioPago(costoFinal);
             }
           }
@@ -127,6 +133,88 @@ class _MonitoreoScreenState extends State<MonitoreoScreen> {
       title: titulo,
       body: cuerpo,
       notificationDetails: detalles,
+    );
+  }
+
+  void _mostrarDialogoCancelacion() {
+    String tipoSeleccionado = 'cancelacion_cliente';
+
+    showModalBottomSheet(
+      context: context,
+      builder: (ctx) => Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '¿Por qué cancelás?',
+              style: GoogleFonts.poppins(
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            const SizedBox(height: 12),
+            ListTile(
+              title: Text('Esperé demasiado', style: GoogleFonts.poppins()),
+              leading: Radio<String>(
+                value: 'cancelacion_cliente',
+                groupValue: tipoSeleccionado,
+                onChanged: (v) => tipoSeleccionado = v!,
+              ),
+            ),
+            ListTile(
+              title: Text(
+                'Llegó mi seguro primero',
+                style: GoogleFonts.poppins(),
+              ),
+              leading: Radio<String>(
+                value: 'llego_seguro_primero',
+                groupValue: tipoSeleccionado,
+                onChanged: (v) => tipoSeleccionado = v!,
+              ),
+            ),
+            const SizedBox(height: 12),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFFE24B4A),
+                ),
+                onPressed: () async {
+                  Navigator.pop(ctx);
+                  try {
+                    final headers = await AuthService.authHeaders();
+                    await http.post(
+                      Uri.parse(
+                        '${ApiConstants.baseUrl}/incidentes/${widget.incidenteId}/excepcion',
+                      ),
+                      headers: headers,
+                      body: jsonEncode({
+                        'tipo_excepcion': tipoSeleccionado,
+                        'motivo': 'Cancelado desde la app del cliente.',
+                        'compensacion_taller': 0.0,
+                      }),
+                    );
+                    if (mounted) Navigator.pop(context);
+                  } catch (e) {
+                    if (mounted)
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('Error al cancelar el servicio.'),
+                        ),
+                      );
+                  }
+                },
+                child: Text(
+                  'Confirmar Cancelación',
+                  style: GoogleFonts.poppins(color: Colors.white),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -427,6 +515,12 @@ class _MonitoreoScreenState extends State<MonitoreoScreen> {
             ),
           ],
         ),
+      ),
+      floatingActionButton: FloatingActionButton.extended(
+        backgroundColor: const Color(0xFFE24B4A),
+        icon: const Icon(Icons.cancel_outlined),
+        label: const Text('Cancelar Servicio'),
+        onPressed: _mostrarDialogoCancelacion,
       ),
     );
   }

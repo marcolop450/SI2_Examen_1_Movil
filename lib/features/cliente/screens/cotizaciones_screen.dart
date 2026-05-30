@@ -68,7 +68,7 @@ class _CotizacionesScreenState extends State<CotizacionesScreen> {
                       style: GoogleFonts.poppins(),
                     ),
                     trailing: ElevatedButton(
-                      onPressed: () => _aceptar(cot['id']),
+                      onPressed: () => _aceptar(cot['id_cotizacion']),
                       child: Text('Aceptar', style: GoogleFonts.poppins()),
                     ),
                   ),
