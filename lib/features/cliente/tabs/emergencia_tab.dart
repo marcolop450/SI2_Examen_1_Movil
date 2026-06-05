@@ -1,3 +1,4 @@
+// #Ciclo5 CU19 - Tab de emergencia refactorizado con OfflineService y ConnectivityService
 import 'dart:io';
 import 'dart:convert';
 import 'package:flutter/material.dart';
@@ -8,9 +9,9 @@ import 'package:record/record.dart'; // NATIVO: MICRÓFONO
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../../core/services/incidente_service.dart';
+import '../../../core/services/connectivity_service.dart'; // #Ciclo5 CU19
+import '../../../core/services/offline_service.dart'; // #Ciclo5 CU19
 import '../../../models/vehiculo_model.dart';
-import 'package:connectivity_plus/connectivity_plus.dart';
-import 'package:uuid/uuid.dart';
 import 'dart:async'; // Para el StreamSubscription
 
 // 🔥 IMPORTAMOS LA NUEVA PANTALLA DE MONITOREO
@@ -48,19 +49,26 @@ class _EmergenciaTabState extends State<EmergenciaTab> {
   bool _grabandoAudio = false;
   File? _audioReal;
 
-  late StreamSubscription<List<ConnectivityResult>> _connectivitySubscription;
+  // --- #Ciclo5 CU19: Conectividad y offline ---
+  bool _isOnline = true;
+  int _pendientesOffline = 0;
+  StreamSubscription<bool>? _connectivitySub;
 
   @override
   void initState() {
     super.initState();
     _obtenerGPS();
+    _cargarPendientesOffline(); // #Ciclo5 CU19
 
-    // CU19: Escuchar cambios de red para sincronizar automáticamente
-    _connectivitySubscription = Connectivity().onConnectivityChanged.listen((
-      List<ConnectivityResult> result,
-    ) {
-      if (!result.contains(ConnectivityResult.none)) {
-        IncidenteService.sincronizarEmergenciasOffline();
+    // #Ciclo5 CU19: Escuchar cambios de red via ConnectivityService singleton
+    _isOnline = ConnectivityService.instance.isOnline;
+    _connectivitySub =
+        ConnectivityService.instance.onConnectivityChanged.listen((online) {
+      if (!mounted) return;
+      setState(() => _isOnline = online);
+      if (online) {
+        // Auto-sync via OfflineService al reconectar
+        _sincronizarPendientes();
       }
     });
   }
@@ -69,8 +77,32 @@ class _EmergenciaTabState extends State<EmergenciaTab> {
   void dispose() {
     _descCtrl.dispose();
     _audioRecorder.dispose();
-    _connectivitySubscription.cancel(); // <-- Importante cancelar
+    _connectivitySub?.cancel(); // #Ciclo5 CU19
     super.dispose();
+  }
+
+  // #Ciclo5 CU19 - Cargar pendientes offline
+  Future<void> _cargarPendientesOffline() async {
+    final count = await OfflineService.contarPendientes();
+    if (mounted) setState(() => _pendientesOffline = count);
+  }
+
+  // #Ciclo5 CU19 - Sincronizar pendientes
+  Future<void> _sincronizarPendientes() async {
+    final result = await OfflineService.sincronizarTodas();
+    await _cargarPendientesOffline();
+    if (result.exitosas > 0 && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            '✅ ${result.exitosas} emergencia(s) sincronizada(s) exitosamente.',
+            style: const TextStyle(color: Colors.white),
+          ),
+          backgroundColor: const Color(0xFF059669),
+          duration: const Duration(seconds: 4),
+        ),
+      );
+    }
   }
 
   Future<void> _obtenerGPS() async {
@@ -208,12 +240,8 @@ class _EmergenciaTabState extends State<EmergenciaTab> {
           });
       }
 
-      // CU19: Verificamos si hay internet
-      final List<ConnectivityResult> connectivityResult = await (Connectivity()
-          .checkConnectivity());
-      bool hasInternet = !connectivityResult.contains(ConnectivityResult.none);
-
-      String uuidGenerado = const Uuid().v4(); // Identificador único blindado
+      // #Ciclo5 CU19: Verificamos conectividad via ConnectivityService
+      final hasInternet = await ConnectivityService.instance.checkNow();
 
       if (hasInternet) {
         // --- FLUJO NORMAL (ONLINE) ---
@@ -223,7 +251,6 @@ class _EmergenciaTabState extends State<EmergenciaTab> {
           longitud: _longitudReal!,
           descripcion: descripcionFinal,
           evidencias: evidenciasPayload,
-          uuidOffline: uuidGenerado, // Lo mandamos igual por seguridad
         );
 
         final incidenteId = nuevoIncidente.idIncidente ?? 0;
@@ -240,32 +267,41 @@ class _EmergenciaTabState extends State<EmergenciaTab> {
           );
         }
       } else {
-        // --- FLUJO OFFLINE (CU19) ---
-        Map<String, dynamic> payloadOffline = {
-          'vehiculoId': _vehiculoSeleccionado!.idVehiculo,
-          'lat': _latitudReal,
-          'lng': _longitudReal,
-          'desc': descripcionFinal,
-          'evidencias': evidenciasPayload,
-          'uuid': uuidGenerado,
-        };
+        // --- #Ciclo5 CU19: FLUJO OFFLINE via OfflineService ---
+        final uuid = await OfflineService.guardarEmergenciaOffline(
+          vehiculoId: _vehiculoSeleccionado!.idVehiculo,
+          latitud: _latitudReal!,
+          longitud: _longitudReal!,
+          descripcion: descripcionFinal,
+          evidencias: evidenciasPayload,
+        );
 
-        SharedPreferences prefs = await SharedPreferences.getInstance();
-        List<String> offlineList =
-            prefs.getStringList('emergencias_offline') ?? [];
-        offlineList.add(jsonEncode(payloadOffline));
-        await prefs.setStringList('emergencias_offline', offlineList);
+        await _cargarPendientesOffline();
 
         if (mounted) {
           _limpiarFormulario();
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text(
-                'Sin conexión 📶. Emergencia guardada. Se enviará automáticamente cuando vuelva la señal.',
-                style: TextStyle(color: Colors.white),
+            SnackBar(
+              content: Row(
+                children: [
+                  const Icon(Icons.cloud_off_rounded,
+                      color: Colors.white, size: 20),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      'Sin conexión 📶 Emergencia guardada localmente.\nSe enviará automáticamente al reconectar.',
+                      style: GoogleFonts.poppins(
+                          color: Colors.white, fontSize: 12),
+                    ),
+                  ),
+                ],
               ),
-              backgroundColor: Colors.orange,
-              duration: Duration(seconds: 5),
+              backgroundColor: const Color(0xFFD97706),
+              duration: const Duration(seconds: 6),
+              behavior: SnackBarBehavior.floating,
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12)),
+              margin: const EdgeInsets.all(12),
             ),
           );
         }
@@ -295,6 +331,8 @@ class _EmergenciaTabState extends State<EmergenciaTab> {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
+        // #Ciclo5 CU19 - Banner de emergencias pendientes offline
+        if (_pendientesOffline > 0) _buildBannerPendientes(),
         _buildBanner(),
         const SizedBox(height: 24),
         Text(
@@ -340,6 +378,97 @@ class _EmergenciaTabState extends State<EmergenciaTab> {
         const SizedBox(height: 24),
         _buildSubmitButton(),
       ],
+    );
+  }
+
+  // #Ciclo5 CU19 - Banner de emergencias pendientes de sincronización
+  Widget _buildBannerPendientes() {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 16),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: [
+            const Color(0xFFFEF3C7),
+            const Color(0xFFFDE68A).withOpacity(0.5),
+          ],
+        ),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFFFBBF24), width: 1.5),
+        boxShadow: [
+          BoxShadow(
+            color: const Color(0xFFFBBF24).withOpacity(0.15),
+            blurRadius: 8,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF59E0B).withOpacity(0.15),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: const Icon(Icons.cloud_upload_outlined,
+                color: Color(0xFFD97706), size: 24),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '$_pendientesOffline emergencia(s) pendiente(s)',
+                  style: GoogleFonts.poppins(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: const Color(0xFF92400E),
+                  ),
+                ),
+                Text(
+                  _isOnline
+                      ? 'Toca para sincronizar ahora'
+                      : 'Se enviarán al recuperar conexión',
+                  style: GoogleFonts.poppins(
+                    fontSize: 11,
+                    color: const Color(0xFFB45309),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          if (_isOnline)
+            GestureDetector(
+              onTap: _sincronizarPendientes,
+              child: Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF59E0B),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.sync_rounded,
+                        color: Colors.white, size: 14),
+                    const SizedBox(width: 4),
+                    Text(
+                      'Sync',
+                      style: GoogleFonts.poppins(
+                        color: Colors.white,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+        ],
+      ),
     );
   }
 
@@ -542,6 +671,22 @@ class _EmergenciaTabState extends State<EmergenciaTab> {
             color: const Color(0xFF7A8A9A),
           ),
         ),
+        // #Ciclo5 CU19 - Indicador de conexión
+        const Spacer(),
+        Icon(
+          _isOnline ? Icons.cloud_done_outlined : Icons.cloud_off_outlined,
+          size: 16,
+          color: _isOnline ? Colors.green : Colors.orange,
+        ),
+        const SizedBox(width: 4),
+        Text(
+          _isOnline ? 'Online' : 'Offline',
+          style: GoogleFonts.poppins(
+            fontSize: 11,
+            color: _isOnline ? Colors.green : Colors.orange,
+            fontWeight: FontWeight.w500,
+          ),
+        ),
       ],
     );
   }
@@ -562,12 +707,36 @@ class _EmergenciaTabState extends State<EmergenciaTab> {
         ),
         child: _enviando
             ? const CircularProgressIndicator(color: Colors.white)
-            : Text(
-                'SOLICITAR AUXILIO',
-                style: GoogleFonts.poppins(
-                  fontWeight: FontWeight.bold,
-                  color: Colors.white,
-                ),
+            : Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Text(
+                    'SOLICITAR AUXILIO',
+                    style: GoogleFonts.poppins(
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white,
+                    ),
+                  ),
+                  if (!_isOnline) ...[
+                    const SizedBox(width: 8),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 6, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: Colors.white.withOpacity(0.2),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Text(
+                        'OFFLINE',
+                        style: GoogleFonts.poppins(
+                          fontSize: 9,
+                          color: Colors.white,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                  ],
+                ],
               ),
       ),
     );

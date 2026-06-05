@@ -1,3 +1,4 @@
+// #Ciclo5 CU23/CU25 - Monitoreo con botón de calificación y consejos de seguridad
 import 'dart:async';
 import 'dart:convert';
 import 'package:web_socket_channel/web_socket_channel.dart';
@@ -7,10 +8,12 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import '../../../core/services/incidente_service.dart';
-import 'pago_screen.dart';
-import 'package:http/http.dart' as http;
 import '../../../core/constants/api_constants.dart';
 import '../../../core/auth_services/auth_service.dart';
+import 'pago_screen.dart';
+import 'calificacion_screen.dart'; // #Ciclo5 CU23
+import 'consejos_seguridad_screen.dart'; // #Ciclo5 CU25
+import 'package:http/http.dart' as http;
 
 class MonitoreoScreen extends StatefulWidget {
   final int incidenteId;
@@ -33,9 +36,15 @@ class _MonitoreoScreenState extends State<MonitoreoScreen> {
   final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin =
       FlutterLocalNotificationsPlugin();
 
+  // #Ciclo5 CU23 - Estado de calificación
+  bool _yaCalificado = false;
+
+
+
   @override
   void initState() {
     super.initState();
+
     _conectarWebSocket();
     _obtenerEstado(); // Mantenemos tu llamada original
   }
@@ -45,13 +54,14 @@ class _MonitoreoScreenState extends State<MonitoreoScreen> {
     _wsSub?.cancel();
     _wsChannel?.sink.close();
     _pollingTimer?.cancel();
+
     super.dispose();
   }
 
+  // #Ciclo5 CU19 - Usar ApiConstants.wsIncidenteUrl dinámico
   void _conectarWebSocket() {
     final uri = Uri.parse(
-      'ws://10.0.2.2:8000/ws/incidente/${widget.incidenteId}',
-      // En producción: 'wss://backend-ixkv.onrender.com/ws/incidente/${widget.incidenteId}'
+      ApiConstants.wsIncidenteUrl(widget.incidenteId),
     );
 
     _wsChannel = WebSocketChannel.connect(uri);
@@ -89,7 +99,7 @@ class _MonitoreoScreenState extends State<MonitoreoScreen> {
               ),
             );
 
-            // CORRECCIÓN AQUÍ: Extraemos el costo y usamos el método correcto
+            // Extraemos el costo y usamos el método correcto
             if (nuevoEstado == 'finalizado') {
               final costoString = data['costo_final']?.toString() ?? '0.0';
               final costoFinal = double.tryParse(costoString) ?? 0.0;
@@ -138,87 +148,172 @@ class _MonitoreoScreenState extends State<MonitoreoScreen> {
 
   void _mostrarDialogoCancelacion() {
     String tipoSeleccionado = 'cancelacion_cliente';
+    final compensacionCtrl = TextEditingController();
 
     showModalBottomSheet(
       context: context,
-      builder: (ctx) => Padding(
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              '¿Por qué cancelás?',
-              style: GoogleFonts.poppins(
-                fontSize: 18,
-                fontWeight: FontWeight.bold,
+      isScrollControlled: true, // permite que el teclado no tape el modal
+      builder: (ctx) => StatefulBuilder(
+        builder: (context, setModalState) => Padding(
+          padding: EdgeInsets.only(
+            left: 20,
+            right: 20,
+            top: 20,
+            bottom: MediaQuery.of(ctx).viewInsets.bottom + 20,
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                '¿Por qué cancelás?',
+                style: GoogleFonts.poppins(
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                ),
               ),
-            ),
-            const SizedBox(height: 12),
-            ListTile(
-              title: Text('Esperé demasiado', style: GoogleFonts.poppins()),
-              leading: Radio<String>(
+              const SizedBox(height: 12),
+
+              // Opción 1
+              RadioListTile<String>(
+                title: Text(
+                  'Esperé demasiado',
+                  style: GoogleFonts.poppins(fontSize: 13),
+                ),
                 value: 'cancelacion_cliente',
                 groupValue: tipoSeleccionado,
-                onChanged: (v) => tipoSeleccionado = v!,
+                onChanged: (v) => setModalState(() => tipoSeleccionado = v!),
               ),
-            ),
-            ListTile(
-              title: Text(
-                'Llegó mi seguro primero',
-                style: GoogleFonts.poppins(),
-              ),
-              leading: Radio<String>(
+
+              // Opción 2
+              RadioListTile<String>(
+                title: Text(
+                  'Llegó mi seguro primero',
+                  style: GoogleFonts.poppins(fontSize: 13),
+                ),
                 value: 'llego_seguro_primero',
                 groupValue: tipoSeleccionado,
-                onChanged: (v) => tipoSeleccionado = v!,
+                onChanged: (v) => setModalState(() => tipoSeleccionado = v!),
               ),
-            ),
-            const SizedBox(height: 12),
-            SizedBox(
-              width: double.infinity,
-              child: ElevatedButton(
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFFE24B4A),
+
+              // Opción 3
+              RadioListTile<String>(
+                title: Text(
+                  'Llegamos ambos (taller + seguro)',
+                  style: GoogleFonts.poppins(fontSize: 13),
                 ),
-                onPressed: () async {
-                  Navigator.pop(ctx);
-                  try {
-                    final headers = await AuthService.authHeaders();
-                    await http.post(
-                      Uri.parse(
-                        '${ApiConstants.baseUrl}/incidentes/${widget.incidenteId}/excepcion',
-                      ),
-                      headers: headers,
-                      body: jsonEncode({
-                        'tipo_excepcion': tipoSeleccionado,
-                        'motivo': 'Cancelado desde la app del cliente.',
-                        'compensacion_taller': 0.0,
-                      }),
-                    );
-                    if (mounted) Navigator.pop(context);
-                  } catch (e) {
-                    if (mounted)
+                value: 'llegaron_ambos',
+                groupValue: tipoSeleccionado,
+                onChanged: (v) => setModalState(() => tipoSeleccionado = v!),
+              ),
+
+              // Campo compensación — aparece siempre porque el taller se desplazó
+              const SizedBox(height: 8),
+              Text(
+                'Compensación al taller por desplazamiento (Bs.)',
+                style: GoogleFonts.poppins(
+                  fontSize: 12,
+                  color: Colors.orange[700],
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+              const SizedBox(height: 6),
+              TextField(
+                controller: compensacionCtrl,
+                keyboardType: TextInputType.number,
+                decoration: InputDecoration(
+                  hintText: 'Ej: 50',
+                  prefixText: 'Bs. ',
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  helperText: 'Ingresá 0 si no hubo desplazamiento',
+                ),
+              ),
+
+              const SizedBox(height: 16),
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFFE24B4A),
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                  ),
+                  onPressed: () async {
+                    final monto = double.tryParse(compensacionCtrl.text) ?? 0.0;
+
+                    // Validar: si el taller llegó, debe haber compensación
+                    if (tipoSeleccionado == 'llegaron_ambos' && monto <= 0) {
                       ScaffoldMessenger.of(context).showSnackBar(
                         const SnackBar(
-                          content: Text('Error al cancelar el servicio.'),
+                          content: Text(
+                            'Debés ingresar un monto mayor a 0 cuando el taller llegó.',
+                          ),
+                          backgroundColor: Colors.red,
                         ),
                       );
-                  }
-                },
-                child: Text(
-                  'Confirmar Cancelación',
-                  style: GoogleFonts.poppins(color: Colors.white),
+                      return;
+                    }
+
+                    Navigator.pop(ctx);
+
+                    try {
+                      final headers = await AuthService.authHeaders();
+                      final response = await http.post(
+                        Uri.parse(
+                          '${ApiConstants.baseUrl}/incidentes/${widget.incidenteId}/excepcion',
+                        ),
+                        headers: headers,
+                        body: jsonEncode({
+                          'tipo_excepcion': tipoSeleccionado,
+                          'motivo': 'Cancelado por el cliente desde la app.',
+                          'compensacion_taller': monto,
+                        }),
+                      );
+
+                      if (response.statusCode == 200 && mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text(
+                              monto > 0
+                                  ? 'Servicio cancelado. Compensación de $monto Bs. enviada al taller.'
+                                  : 'Servicio cancelado correctamente.',
+                            ),
+                            backgroundColor: Colors.green,
+                          ),
+                        );
+                        // Volver al inicio del cliente
+                        Navigator.pushReplacementNamed(
+                          context,
+                          '/cliente/home',
+                        );
+                      }
+                    } catch (e) {
+                      if (mounted)
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text('Error al cancelar el servicio.'),
+                          ),
+                        );
+                    }
+                  },
+                  child: Text(
+                    'Confirmar Cancelación',
+                    style: GoogleFonts.poppins(
+                      color: Colors.white,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
                 ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
   }
 
-  // 🔥 NUEVA FUNCIÓN: Muestra el anuncio antes de ir al pago
+  // Muestra el anuncio antes de ir al pago
   void _mostrarAnuncioPago(double monto) {
     showDialog(
       context: context,
@@ -294,11 +389,11 @@ class _MonitoreoScreenState extends State<MonitoreoScreen> {
             'Tu técnico ha finalizado el trabajo. Revisa el costo final.',
           );
 
-          // Leemos el costo dinámico (Asegúrate de que 'costo_final_decimal' sea el nombre correcto de tu DB)
+          // Leemos el costo dinámico
           final costoString = datos['costo_final_decimal']?.toString() ?? '0.0';
           final costoFinal = double.tryParse(costoString) ?? 0.0;
 
-          // 🔥 Mostramos el anuncio en lugar de ir directo
+          // Mostramos el anuncio en lugar de ir directo
           _mostrarAnuncioPago(costoFinal);
         }
         _estadoAnterior = estadoActual;
@@ -377,6 +472,143 @@ class _MonitoreoScreenState extends State<MonitoreoScreen> {
     }
   }
 
+  // =========================================================
+  // #Ciclo5 CU25 - Banner de consejos de seguridad vial
+  // =========================================================
+  Widget _buildBannerConsejos(String estado) {
+    final estadosEspera = [
+      'buscando_taller',
+      'taller_asignado',
+      'en_camino',
+      'pendiente'
+    ];
+    if (!estadosEspera.contains(estado)) return const SizedBox.shrink();
+
+    return GestureDetector(
+      onTap: () {
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (_) => ConsejosSeguridad(incidenteId: widget.incidenteId),
+          ),
+        );
+      },
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 16),
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          gradient: const LinearGradient(
+            colors: [Color(0xFF1E3A5F), Color(0xFF0D1B2A)],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+          ),
+          borderRadius: BorderRadius.circular(14),
+          boxShadow: [
+            BoxShadow(
+              color: const Color(0xFF1E3A5F).withValues(alpha: 0.25),
+              blurRadius: 12,
+              offset: const Offset(0, 4),
+            ),
+          ],
+        ),
+        child: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: 0.15),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: const Text('🛡️', style: TextStyle(fontSize: 24)),
+            ),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Tips de Seguridad',
+                    style: GoogleFonts.poppins(
+                      color: Colors.white,
+                      fontWeight: FontWeight.w600,
+                      fontSize: 14,
+                    ),
+                  ),
+                  Text(
+                    'Consejos mientras esperas auxilio →',
+                    style: GoogleFonts.poppins(
+                      color: Colors.white70,
+                      fontSize: 11,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Icon(
+              Icons.arrow_forward_ios_rounded,
+              color: Colors.white.withValues(alpha: 0.6),
+              size: 16,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // =========================================================
+  // #Ciclo5 CU23 - Botón para calificar el servicio
+  // =========================================================
+  Widget _buildBotonCalificar(String estado) {
+    final estadosCalificables = ['atendido', 'finalizado'];
+    if (!estadosCalificables.contains(estado) || _yaCalificado) {
+      return const SizedBox.shrink();
+    }
+
+    return Container(
+      margin: const EdgeInsets.only(top: 16),
+      width: double.infinity,
+      child: ElevatedButton.icon(
+        onPressed: () async {
+          final result = await Navigator.push<bool>(
+            context,
+            MaterialPageRoute(
+              builder: (_) => CalificacionScreen(
+                incidenteId: widget.incidenteId,
+                nombreTaller: _datos?['tecnico_asignado']?['nombre'],
+              ),
+            ),
+          );
+          if (result == true && mounted) {
+            setState(() => _yaCalificado = true);
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('⭐ ¡Gracias por calificar el servicio!'),
+                backgroundColor: Color(0xFF059669),
+              ),
+            );
+          }
+        },
+        style: ElevatedButton.styleFrom(
+          backgroundColor: const Color(0xFFF59E0B),
+          padding: const EdgeInsets.symmetric(vertical: 14),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+          ),
+          elevation: 3,
+        ),
+        icon: const Text('⭐', style: TextStyle(fontSize: 20)),
+        label: Text(
+          'Califica este servicio',
+          style: GoogleFonts.poppins(
+            color: Colors.white,
+            fontWeight: FontWeight.w600,
+            fontSize: 15,
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_datos == null) {
@@ -411,10 +643,13 @@ class _MonitoreoScreenState extends State<MonitoreoScreen> {
           ),
         ),
       ),
-      body: Padding(
+      body: SingleChildScrollView(
         padding: const EdgeInsets.all(20),
         child: Column(
           children: [
+            // #Ciclo5 CU25 - Banner de consejos cuando está esperando
+            _buildBannerConsejos(estado),
+
             const SizedBox(height: 10),
             Icon(
               estado == 'pendiente' ? Icons.search : Icons.directions_car,
@@ -425,7 +660,9 @@ class _MonitoreoScreenState extends State<MonitoreoScreen> {
             Text(
               estado == 'pendiente'
                   ? 'Buscando el taller más cercano...'
-                  : '¡Auxilio en Camino!',
+                  : estado == 'atendido' || estado == 'finalizado'
+                      ? '✅ Servicio Completado'
+                      : '¡Auxilio en Camino!',
               style: GoogleFonts.poppins(
                 fontSize: 22,
                 fontWeight: FontWeight.bold,
@@ -480,7 +717,52 @@ class _MonitoreoScreenState extends State<MonitoreoScreen> {
                 ),
               ),
 
-            const Spacer(),
+            const SizedBox(height: 20),
+
+            if (tecnico != null)
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.grey[100],
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      '📍 Ubicación de la emergencia',
+                      style: GoogleFonts.poppins(fontWeight: FontWeight.w500),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      'Lat: ${_datos?['latitud_tecnico'] ?? 'Esperando GPS...'}',
+                      style: GoogleFonts.poppins(fontSize: 12),
+                    ),
+                    Text(
+                      'Lng: ${_datos?['longitud_tecnico'] ?? ''}',
+                      style: GoogleFonts.poppins(fontSize: 12),
+                    ),
+                    if (_datos?['eta_minutos'] != null)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 4),
+                        child: Text(
+                          'ETA: ${_datos!['eta_minutos']} minutos',
+                          style: GoogleFonts.poppins(
+                            fontSize: 12,
+                            color: Colors.green,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+
+            // #Ciclo5 CU23 - Botón de calificación post-servicio
+            _buildBotonCalificar(estado),
+
+            const SizedBox(height: 20),
             SizedBox(
               width: double.infinity,
               height: 50,

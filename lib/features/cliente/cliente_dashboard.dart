@@ -1,18 +1,23 @@
+// #Ciclo5 CU19 - Dashboard del cliente con banner de conectividad y auto-sync
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import '../../core/auth_services/auth_service.dart';
 import '../../core/storage/storage_service.dart';
 import '../../core/services/vehiculo_service.dart';
 import '../../core/services/notificacion_service.dart';
 import '../../core/services/incidente_service.dart'; // NATIVO: Para el Radar
+import '../../core/services/connectivity_service.dart'; // #Ciclo5 CU19
+import '../../core/services/offline_service.dart'; // #Ciclo5 CU19
 import '../../models/vehiculo_model.dart';
 import '../../models/notificacion_model.dart';
 import 'tabs/inicio_tab.dart';
 import 'tabs/vehiculos_tab.dart';
 import 'tabs/emergencia_tab.dart';
 import 'tabs/alertas_tab.dart';
+import 'screens/cotizaciones_screen.dart';
 
 class ClienteDashboard extends StatefulWidget {
   const ClienteDashboard({super.key});
@@ -21,7 +26,8 @@ class ClienteDashboard extends StatefulWidget {
   State<ClienteDashboard> createState() => _ClienteDashboardState();
 }
 
-class _ClienteDashboardState extends State<ClienteDashboard> {
+class _ClienteDashboardState extends State<ClienteDashboard>
+    with SingleTickerProviderStateMixin {
   static const _redEmergencia = Color(0xFFE24B4A);
   static const _darkNavy = Color(0xFF0D1B2A);
   static const _verde = Color(0xFF2E7D32);
@@ -39,17 +45,94 @@ class _ClienteDashboardState extends State<ClienteDashboard> {
   int? _incidenteActivoId;
   String _estadoAnteriorRadar = 'pendiente';
 
+  // --- #Ciclo5 CU19 - Variables de conectividad ---
+  bool _isOnline = true;
+  int _pendientesOffline = 0;
+  StreamSubscription<bool>? _connectivitySub;
+  bool _mostrarBannerSyncExito = false;
+
+  // --- Notificaciones locales ---
+  final FlutterLocalNotificationsPlugin _notificationsPlugin =
+      FlutterLocalNotificationsPlugin();
+
   @override
   void initState() {
     super.initState();
     _cargarDatosIniciales();
-    _iniciarRadarGlobal(); // Encendemos el radar de notificaciones al abrir la app
+    _iniciarRadarGlobal();
+    _iniciarMonitoreoConectividad(); // #Ciclo5 CU19
+    _cargarPendientesOffline(); // #Ciclo5 CU19
   }
 
   @override
   void dispose() {
     _radarTimer?.cancel();
+    _connectivitySub?.cancel(); // #Ciclo5 CU19
     super.dispose();
+  }
+
+  // =========================================================
+  // #Ciclo5 CU19 - Monitoreo de conectividad global
+  // =========================================================
+  void _iniciarMonitoreoConectividad() {
+    _isOnline = ConnectivityService.instance.isOnline;
+
+    _connectivitySub =
+        ConnectivityService.instance.onConnectivityChanged.listen((online) {
+      if (!mounted) return;
+
+      final wasOffline = !_isOnline;
+      setState(() => _isOnline = online);
+
+      if (online && wasOffline) {
+        // ¡Conexión restaurada! Auto-sync
+        _sincronizarEmergenciasOffline();
+      }
+    });
+  }
+
+  // #Ciclo5 CU19 - Cargar cantidad de emergencias pendientes
+  Future<void> _cargarPendientesOffline() async {
+    final count = await OfflineService.contarPendientes();
+    if (mounted) setState(() => _pendientesOffline = count);
+  }
+
+  // #Ciclo5 CU19 - Sincronizar emergencias offline con reintentos
+  Future<void> _sincronizarEmergenciasOffline() async {
+    final pendientes = await OfflineService.contarPendientes();
+    if (pendientes == 0) return;
+
+    final result = await OfflineService.sincronizarTodas();
+
+    if (result.exitosas > 0) {
+      // Mostrar banner de éxito
+      if (mounted) {
+        setState(() => _mostrarBannerSyncExito = true);
+        Future.delayed(const Duration(seconds: 3), () {
+          if (mounted) setState(() => _mostrarBannerSyncExito = false);
+        });
+      }
+
+      // Notificación local nativa
+      await _notificationsPlugin.show(
+        id: 99,
+        title: '✅ Sincronización completada',
+        body:
+            '${result.exitosas} emergencia(s) enviada(s) al servidor exitosamente.',
+        notificationDetails: const NotificationDetails(
+          android: AndroidNotificationDetails(
+            'sync_channel',
+            'Sincronización Offline',
+            channelDescription: 'Notificaciones de sincronización offline',
+            importance: Importance.high,
+            priority: Priority.high,
+          ),
+        ),
+      );
+    }
+
+    await _cargarPendientesOffline();
+    await _cargarDatosIniciales(); // Recargar datos
   }
 
   Future<void> _cargarDatosIniciales() async {
@@ -93,6 +176,9 @@ class _ClienteDashboardState extends State<ClienteDashboard> {
       print("Error cargando alertas: $e");
     }
 
+    // #Ciclo5 CU19 - Actualizar pendientes offline
+    await _cargarPendientesOffline();
+
     if (mounted) {
       setState(() {
         _nombreUsuario = nombreReal;
@@ -116,7 +202,6 @@ class _ClienteDashboardState extends State<ClienteDashboard> {
           _incidenteActivoId!,
         );
         final estado = data['estado_actual'];
-
         if (estado != _estadoAnteriorRadar) {
           if (estado == 'en_proceso') {
             _mostrarNotificacionPush(
@@ -128,6 +213,27 @@ class _ClienteDashboardState extends State<ClienteDashboard> {
               '¡Servicio Completado!',
               'Toca el botón verde de Servicio en Curso para realizar el pago.',
             );
+          } else if (estado == 'taller_asignado') {
+            // CU18 — El cliente aceptó una cotización, navegar al monitoreo
+            _mostrarNotificacionPush(
+              '✅ Taller Confirmado',
+              'Tu taller fue asignado. Podés seguir el recorrido en Monitoreo.',
+            );
+          } else if (estado == 'buscando_taller' || estado == 'pendiente') {
+            // CU18 — Hay cotizaciones disponibles para revisar
+            final cotizaciones = data['cotizaciones_pendientes'] ?? 0;
+            if (cotizaciones > 0) {
+              _mostrarBannerCotizaciones();
+            }
+          } else if (estado == 'cancelado') {
+            _mostrarNotificacionPush(
+              'Servicio Cancelado',
+              'Tu emergencia fue cerrada.',
+            );
+            // Limpiar el incidente activo
+            SharedPreferences prefs = await SharedPreferences.getInstance();
+            await prefs.remove('incidente_activo_id');
+            if (mounted) setState(() => _incidenteActivoId = null);
           }
           _estadoAnteriorRadar = estado;
           if (mounted) setState(() {});
@@ -136,6 +242,37 @@ class _ClienteDashboardState extends State<ClienteDashboard> {
         // Ignoramos errores de red
       }
     });
+  }
+
+  void _mostrarBannerCotizaciones() {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: const Text(
+          '💰 Tenés cotizaciones disponibles. ¡Revisalas ahora!',
+          style: TextStyle(fontWeight: FontWeight.bold),
+        ),
+        backgroundColor: const Color(0xFF1D4ED8),
+        duration: const Duration(seconds: 8),
+        behavior: SnackBarBehavior.floating,
+        margin: const EdgeInsets.only(bottom: 20, left: 10, right: 10),
+        action: SnackBarAction(
+          label: 'Ver',
+          textColor: Colors.white,
+          onPressed: () {
+            if (_incidenteActivoId != null) {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) =>
+                      CotizacionesScreen(incidenteId: _incidenteActivoId!),
+                ),
+              );
+            }
+          },
+        ),
+      ),
+    );
   }
 
   void _mostrarNotificacionPush(String titulo, String cuerpo) {
@@ -157,6 +294,90 @@ class _ClienteDashboardState extends State<ClienteDashboard> {
         duration: const Duration(seconds: 5),
         behavior: SnackBarBehavior.floating,
         margin: const EdgeInsets.only(bottom: 20, left: 10, right: 10),
+      ),
+    );
+  }
+
+  // =========================================================
+  // #Ciclo5 CU19 - Widget del banner de conectividad
+  // =========================================================
+  Widget _buildBannerConectividad() {
+    if (_isOnline && !_mostrarBannerSyncExito && _pendientesOffline == 0) {
+      return const SizedBox.shrink();
+    }
+
+    Color bgColor;
+    IconData icon;
+    String text;
+
+    if (_mostrarBannerSyncExito) {
+      bgColor = const Color(0xFF059669); // verde esmeralda
+      icon = Icons.cloud_done_rounded;
+      text = '✅ Conexión restaurada — Emergencias sincronizadas';
+    } else if (!_isOnline) {
+      bgColor = const Color(0xFFDC2626); // rojo
+      icon = Icons.cloud_off_rounded;
+      text = _pendientesOffline > 0
+          ? '📡 Sin conexión — $_pendientesOffline emergencia(s) pendiente(s)'
+          : '📡 Sin conexión a internet';
+    } else if (_pendientesOffline > 0) {
+      bgColor = const Color(0xFFF59E0B); // ámbar
+      icon = Icons.sync_rounded;
+      text = '🔄 $_pendientesOffline emergencia(s) pendiente(s) de sincronizar';
+    } else {
+      return const SizedBox.shrink();
+    }
+
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 400),
+      curve: Curves.easeInOut,
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      decoration: BoxDecoration(
+        color: bgColor,
+        boxShadow: [
+          BoxShadow(
+            color: bgColor.withOpacity(0.3),
+            blurRadius: 8,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Row(
+        children: [
+          Icon(icon, color: Colors.white, size: 18),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              text,
+              style: GoogleFonts.poppins(
+                color: Colors.white,
+                fontSize: 12,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ),
+          if (_isOnline && _pendientesOffline > 0)
+            GestureDetector(
+              onTap: _sincronizarEmergenciasOffline,
+              child: Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                decoration: BoxDecoration(
+                  color: Colors.white.withOpacity(0.2),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Text(
+                  'Sincronizar',
+                  style: GoogleFonts.poppins(
+                    color: Colors.white,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ),
+        ],
       ),
     );
   }
@@ -206,6 +427,17 @@ class _ClienteDashboardState extends State<ClienteDashboard> {
           ],
         ),
         actions: [
+          // #Ciclo5 CU19 - Indicador de conectividad en AppBar
+          Padding(
+            padding: const EdgeInsets.only(right: 4),
+            child: Icon(
+              _isOnline ? Icons.wifi_rounded : Icons.wifi_off_rounded,
+              color: _isOnline
+                  ? const Color(0xFF34D399)
+                  : const Color(0xFFF87171),
+              size: 18,
+            ),
+          ),
           IconButton(
             onPressed: () => setState(() => _tabActual = 3),
             icon: Badge(
@@ -220,6 +452,7 @@ class _ClienteDashboardState extends State<ClienteDashboard> {
           IconButton(
             onPressed: () async {
               _radarTimer?.cancel();
+              _connectivitySub?.cancel(); // #Ciclo5 CU19
               await AuthService.logout();
               if (mounted) Navigator.pushReplacementNamed(context, '/');
             },
@@ -227,11 +460,19 @@ class _ClienteDashboardState extends State<ClienteDashboard> {
           ),
         ],
       ),
-      body: _cargando
-          ? const Center(
-              child: CircularProgressIndicator(color: _redEmergencia),
-            )
-          : tabs[_tabActual],
+      body: Column(
+        children: [
+          // #Ciclo5 CU19 - Banner de conectividad global
+          _buildBannerConectividad(),
+          Expanded(
+            child: _cargando
+                ? const Center(
+                    child: CircularProgressIndicator(color: _redEmergencia),
+                  )
+                : tabs[_tabActual],
+          ),
+        ],
+      ),
       bottomNavigationBar: BottomNavigationBar(
         currentIndex: _tabActual,
         onTap: (i) => setState(() => _tabActual = i),

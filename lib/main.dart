@@ -1,15 +1,20 @@
+// #Ciclo5 CU19 - Inicialización del servicio de conectividad global
 import 'package:flutter/material.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'features/auth/login_screen.dart';
 import 'features/auth/register_screen.dart';
 import 'features/cliente/cliente_dashboard.dart';
 import 'features/tecnico/tecnico_dashboard.dart';
+import 'core/services/connectivity_service.dart'; // #Ciclo5 CU19
 
 final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin =
     FlutterLocalNotificationsPlugin();
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // #Ciclo5 CU19 - Inicializar monitoreo global de conectividad
+  ConnectivityService.instance.init();
 
   final AndroidInitializationSettings initSettingsAndroid =
       const AndroidInitializationSettings('@mipmap/ic_launcher');
