@@ -26,6 +26,8 @@ dependencies:
   google_maps_flutter: ^2.17.1
   connectivity_plus: ^6.0.3
   uuid: ^4.4.0
+  flutter_map: ^7.0.2        # #Ciclo5 - Mapa OpenStreetMap (sin API key)
+  latlong2: ^0.9.1           # #Ciclo5 - Coordenadas para flutter_map
   
 dev_dependencies:
   flutter_test:

@@ -43,7 +43,7 @@ class _ClienteDashboardState extends State<ClienteDashboard>
   // --- VARIABLES DEL RADAR GLOBAL ---
   Timer? _radarTimer;
   int? _incidenteActivoId;
-  String _estadoAnteriorRadar = 'pendiente';
+  String? _estadoAnteriorRadar;
 
   // --- #Ciclo5 CU19 - Variables de conectividad ---
   bool _isOnline = true;
@@ -154,9 +154,14 @@ class _ClienteDashboardState extends State<ClienteDashboard>
       if (idActivo != null) {
         await prefs.setInt('incidente_activo_id', idActivo);
         _incidenteActivoId = idActivo;
+        try {
+          final data = await IncidenteService.monitorearEmergencia(idActivo);
+          _estadoAnteriorRadar = data['estado_actual'];
+        } catch (_) {}
       } else {
         await prefs.remove('incidente_activo_id');
         _incidenteActivoId = null;
+        _estadoAnteriorRadar = null;
       }
     } catch (e) {
       print("Error obteniendo emergencia activa: $e");
@@ -203,34 +208,42 @@ class _ClienteDashboardState extends State<ClienteDashboard>
         );
         final estado = data['estado_actual'];
         if (estado != _estadoAnteriorRadar) {
-          if (estado == 'en_proceso') {
+          if (estado == 'buscando_taller') {
+            // #Ciclo5 CU18 - Nuevo flujo: hay cotizaciones llegando
+            final cotizaciones = data['cotizaciones_pendientes'] ?? 0;
+            if (cotizaciones > 0) {
+              _mostrarBannerCotizaciones();
+            } else {
+              _mostrarNotificacionPush(
+                '📡 Buscando talleres...',
+                'Tu emergencia fue recibida. Pronto recibirás cotizaciones.',
+              );
+            }
+          } else if (estado == 'taller_asignado') {
+            _mostrarNotificacionPush(
+              '✅ Taller Confirmado',
+              'Tu taller fue asignado. Podes seguir el recorrido en Monitoreo.',
+            );
+          } else if (estado == 'en_proceso') {
             _mostrarNotificacionPush(
               '¡Técnico Asignado!',
               'El mecánico va en camino a tu ubicación. Entra al monitoreo.',
+            );
+          } else if (estado == 'en_atencion') {
+            _mostrarNotificacionPush(
+              '🔧 En Atención',
+              'El técnico está trabajando en tu vehículo.',
             );
           } else if (estado == 'atendido') {
             _mostrarNotificacionPush(
               '¡Servicio Completado!',
               'Toca el botón verde de Servicio en Curso para realizar el pago.',
             );
-          } else if (estado == 'taller_asignado') {
-            // CU18 — El cliente aceptó una cotización, navegar al monitoreo
-            _mostrarNotificacionPush(
-              '✅ Taller Confirmado',
-              'Tu taller fue asignado. Podés seguir el recorrido en Monitoreo.',
-            );
-          } else if (estado == 'buscando_taller' || estado == 'pendiente') {
-            // CU18 — Hay cotizaciones disponibles para revisar
-            final cotizaciones = data['cotizaciones_pendientes'] ?? 0;
-            if (cotizaciones > 0) {
-              _mostrarBannerCotizaciones();
-            }
           } else if (estado == 'cancelado') {
             _mostrarNotificacionPush(
               'Servicio Cancelado',
               'Tu emergencia fue cerrada.',
             );
-            // Limpiar el incidente activo
             SharedPreferences prefs = await SharedPreferences.getInstance();
             await prefs.remove('incidente_activo_id');
             if (mounted) setState(() => _incidenteActivoId = null);
@@ -389,6 +402,7 @@ class _ClienteDashboardState extends State<ClienteDashboard>
         nombreUsuario: _nombreUsuario,
         vehiculos: _vehiculos,
         incidenteActivoId: _incidenteActivoId, // 🔥 Pasamos el ID al inicio
+        estadoActivo: _estadoAnteriorRadar,    // 🔥 Pasamos el estado para saber si está cotizando
         onReportarEmergencia: () => setState(() => _tabActual = 2),
         onRefresh: _cargarDatosIniciales, // 🔥 Refresco manual
       ),

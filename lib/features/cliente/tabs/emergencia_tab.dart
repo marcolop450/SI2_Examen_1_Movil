@@ -14,8 +14,8 @@ import '../../../core/services/offline_service.dart'; // #Ciclo5 CU19
 import '../../../models/vehiculo_model.dart';
 import 'dart:async'; // Para el StreamSubscription
 
-// 🔥 IMPORTAMOS LA NUEVA PANTALLA DE MONITOREO
-import '../screens/monitoreo_screen.dart';
+// 🔥 NUEVO FLUJO: Después de crear emergencia → esperar cotizaciones
+import '../screens/cotizaciones_screen.dart'; // #Ciclo5 CU18
 
 class EmergenciaTab extends StatefulWidget {
   final List<VehiculoModel> vehiculos;
@@ -256,19 +256,24 @@ class _EmergenciaTabState extends State<EmergenciaTab> {
         final incidenteId = nuevoIncidente.idIncidente ?? 0;
         SharedPreferences prefs = await SharedPreferences.getInstance();
         await prefs.setInt('incidente_activo_id', incidenteId);
+        // #Ciclo5 FIX - Guardar coordenadas localmente para el mapa del cliente
+        await prefs.setDouble('emergencia_lat', _latitudReal!);
+        await prefs.setDouble('emergencia_lng', _longitudReal!);
 
         if (mounted) {
           _limpiarFormulario();
+          // #Ciclo5 CU18 - Nuevo flujo: ir a esperar cotizaciones
           Navigator.push(
             context,
             MaterialPageRoute(
-              builder: (context) => MonitoreoScreen(incidenteId: incidenteId),
+              builder: (context) =>
+                  CotizacionesScreen(incidenteId: incidenteId),
             ),
           );
         }
       } else {
         // --- #Ciclo5 CU19: FLUJO OFFLINE via OfflineService ---
-        final uuid = await OfflineService.guardarEmergenciaOffline(
+        await OfflineService.guardarEmergenciaOffline(
           vehiculoId: _vehiculoSeleccionado!.idVehiculo,
           latitud: _latitudReal!,
           longitud: _longitudReal!,

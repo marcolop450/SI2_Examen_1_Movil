@@ -19,11 +19,11 @@ class NotificacionModel {
 
   factory NotificacionModel.fromJson(Map<String, dynamic> j) =>
       NotificacionModel(
-        idNotificacion: j['id_notificacion'],
-        usuarioId: j['usuario_id'],
-        titulo: j['titulo'],
-        mensaje: j['mensaje'],
-        leido: j['leido_boolean'] ?? false,
-        fechaCreacion: j['fecha_creacion_timestamp'],
+        idNotificacion: j['id_notificacion'] ?? j['id'] ?? 0,
+        usuarioId: j['usuario_id'] ?? j['usuarioId'] ?? 0,
+        titulo: j['titulo']?.toString(),
+        mensaje: j['mensaje']?.toString(),
+        leido: j['leido_boolean'] ?? j['leido'] ?? false,
+        fechaCreacion: j['fecha_creacion_timestamp']?.toString() ?? j['fecha_creacion']?.toString(),
       );
 }

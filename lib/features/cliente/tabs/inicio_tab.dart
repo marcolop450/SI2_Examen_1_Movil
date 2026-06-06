@@ -2,11 +2,13 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import '../../../models/vehiculo_model.dart';
 import '../screens/monitoreo_screen.dart'; // 🔥 Importamos la pantalla de monitoreo
+import '../screens/cotizaciones_screen.dart';
 
 class InicioTab extends StatelessWidget {
   final String nombreUsuario;
   final List<VehiculoModel> vehiculos;
   final int? incidenteActivoId; // Recibe si hay una emergencia en curso
+  final String? estadoActivo; // Recibe el estado actual (e.g. buscando_taller)
   final VoidCallback onReportarEmergencia;
   final Future<void> Function() onRefresh;
 
@@ -15,6 +17,7 @@ class InicioTab extends StatelessWidget {
     required this.nombreUsuario,
     required this.vehiculos,
     this.incidenteActivoId,
+    this.estadoActivo,
     required this.onReportarEmergencia,
     required this.onRefresh,
   });
@@ -36,26 +39,38 @@ class InicioTab extends StatelessWidget {
           if (incidenteActivoId != null)
             GestureDetector(
               onTap: () {
-                // 🔥 AL HACER CLICK, SALTAMOS A LA PANTALLA DE MONITOREO
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (context) =>
-                        MonitoreoScreen(incidenteId: incidenteActivoId!),
-                  ),
-                );
+                // 🔥 Dependiendo del estado, vamos a Monitoreo o a Cotizaciones
+                if (estadoActivo == 'buscando_taller') {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => CotizacionesScreen(incidenteId: incidenteActivoId!),
+                    ),
+                  );
+                } else {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => MonitoreoScreen(incidenteId: incidenteActivoId!),
+                    ),
+                  );
+                }
               },
               child: Container(
                 margin: const EdgeInsets.only(bottom: 24),
                 padding: const EdgeInsets.all(16),
                 decoration: BoxDecoration(
-                  gradient: const LinearGradient(
-                    colors: [Color(0xFF2E7D32), Color(0xFF4CAF50)],
+                  gradient: LinearGradient(
+                    colors: estadoActivo == 'buscando_taller'
+                        ? [const Color(0xFF1E3A8A), const Color(0xFF3B82F6)] // Azul para cotizar
+                        : [const Color(0xFF2E7D32), const Color(0xFF4CAF50)], // Verde para servicio
                   ),
                   borderRadius: BorderRadius.circular(16),
                   boxShadow: [
                     BoxShadow(
-                      color: Colors.green.withOpacity(0.3),
+                      color: estadoActivo == 'buscando_taller'
+                          ? Colors.blue.withOpacity(0.3)
+                          : Colors.green.withOpacity(0.3),
                       blurRadius: 10,
                       offset: const Offset(0, 5),
                     ),
@@ -63,14 +78,18 @@ class InicioTab extends StatelessWidget {
                 ),
                 child: Row(
                   children: [
-                    const Icon(Icons.radar, color: Colors.white, size: 40),
+                    Icon(
+                      estadoActivo == 'buscando_taller' ? Icons.request_quote : Icons.radar, 
+                      color: Colors.white, 
+                      size: 40
+                    ),
                     const SizedBox(width: 16),
                     Expanded(
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            'Servicio en Curso',
+                            estadoActivo == 'buscando_taller' ? 'Cotizar Servicio' : 'Servicio en Curso',
                             style: GoogleFonts.poppins(
                               color: Colors.white,
                               fontWeight: FontWeight.bold,
@@ -78,7 +97,9 @@ class InicioTab extends StatelessWidget {
                             ),
                           ),
                           Text(
-                            'Toca aquí para ver el GPS del técnico en vivo.',
+                            estadoActivo == 'buscando_taller' 
+                                ? 'Tienes talleres enviando ofertas. Toca aquí para ver.'
+                                : 'Toca aquí para ver el GPS del técnico en vivo.',
                             style: GoogleFonts.poppins(
                               color: Colors.white70,
                               fontSize: 12,

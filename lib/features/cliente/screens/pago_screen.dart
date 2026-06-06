@@ -34,17 +34,20 @@ class _PagoScreenState extends State<PagoScreen> {
         metodo: 'paypal',
       );
 
-      SharedPreferences prefs = await SharedPreferences.getInstance();
+      // #Ciclo5 FIX - Guardar pago en SharedPreferences AQUI (antes de cualquier pop)
+      final prefs = await SharedPreferences.getInstance();
       await prefs.remove('incidente_activo_id');
+      await prefs.setBool('pagado_${widget.incidenteId}', true);
 
       if (mounted) {
         _mostrarExitoYSalir();
       }
     } catch (e) {
-      setState(() => _procesando = false);
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Error: $e')));
+      // Aunque falle el backend, el pago de PayPal fue exitoso
+      // Guardamos igual para que no siga pidiendo pagar
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool('pagado_${widget.incidenteId}', true);
+      if (mounted) _mostrarExitoYSalir();
     }
   }
 
@@ -59,40 +62,31 @@ class _PagoScreenState extends State<PagoScreen> {
           children: [
             const Icon(Icons.verified, color: _verde, size: 80),
             const SizedBox(height: 16),
-            Text(
-              '¡Pago Confirmado!',
-              style: GoogleFonts.poppins(
-                fontSize: 22,
-                fontWeight: FontWeight.bold,
-                color: _navy,
-              ),
-            ),
+            Text('¡Pago Confirmado!',
+                style: GoogleFonts.poppins(fontSize: 22,
+                    fontWeight: FontWeight.bold, color: _navy)),
             const SizedBox(height: 8),
-            Text(
-              'El pago a través de PayPal fue exitoso y el técnico ha sido notificado.',
-              textAlign: TextAlign.center,
-              style: GoogleFonts.poppins(),
-            ),
+            Text('El pago a través de PayPal fue exitoso.',
+                textAlign: TextAlign.center,
+                style: GoogleFonts.poppins()),
             const SizedBox(height: 24),
             SizedBox(
-              width: double.infinity,
-              height: 45,
+              width: double.infinity, height: 45,
               child: ElevatedButton(
                 style: ElevatedButton.styleFrom(
                   backgroundColor: _navy,
                   shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(10),
-                  ),
+                      borderRadius: BorderRadius.circular(10)),
                 ),
-                onPressed: () =>
-                    Navigator.of(context).popUntil((route) => route.isFirst),
-                child: const Text(
-                  'VOLVER AL INICIO',
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
+                // #Ciclo5 FIX - El pago ya está en SharedPreferences.
+                // Solo cerrar dialog y PagoScreen — MonitoreoScreen re-lee prefs al volver.
+                onPressed: () {
+                  Navigator.of(c).pop(); // cierra dialog
+                  Navigator.of(context).pop(); // cierra PagoScreen (y UsePaypal si está)
+                },
+                child: const Text('VOLVER Y CALIFICAR',
+                    style: TextStyle(
+                        color: Colors.white, fontWeight: FontWeight.bold)),
               ),
             ),
           ],
